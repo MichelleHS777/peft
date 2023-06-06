@@ -8,10 +8,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from peft import (
-    get_peft_config,
     get_peft_model,
-    get_peft_model_state_dict,
-    set_peft_model_state_dict,
     PeftType,
     PrefixTuningConfig,
     PromptEncoderConfig,
@@ -21,12 +18,16 @@ from datasets import Dataset, DatasetDict
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup, set_seed, \
     InputExample
 from tqdm import tqdm
+from pytorchtools import EarlyStopping
+
 
 # ------------------------init parameters----------------------------
 parser = argparse.ArgumentParser(description='P-tuning v2')
 parser.add_argument('--plm', type=str, default="bert", help='choose plm: bert or roberta or ernie')
 parser.add_argument('--type', type=str, default="ptuningv2", help='choose model: ptuningv1, ptuningv2, lora')
 parser.add_argument('--soft_tokens', type=int, default=10, help='define the soft tokens')
+parser.add_argument('--patience', type=int, default=8, help='define the soft tokens')
+parser.add_argument('--num_epochs', type=int, default=15, help='define the soft tokens')
 args = parser.parse_args()
 
 if args.plm == 'bert':
@@ -38,20 +39,20 @@ elif args.plm == 'ernie':
 elif args.plm == 'bert-large':
     model_name_or_path = "yechen/bert-large-chinese"
 
-batch_size = 4
+batch_size = 8
 device = "cuda"
-num_epochs = 8
-lr = 1e-2
+lr = 5e-5
 
 if args.type=='ptuningv2':
     peft_type = PeftType.PREFIX_TUNING
-    peft_config = PrefixTuningConfig(task_type="SEQ_CLS", num_virtual_tokens=args.soft_tokens)
+    peft_config = PrefixTuningConfig(task_type="SEQ_CLS", num_virtual_tokens=args.soft_tokens,encoder_hidden_size=1024)
 elif args.type=='lora':
     peft_type = PeftType.LORA
-    peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=8, lora_alpha=16, lora_dropout=0.1)
+    peft_config = LoraConfig(task_type="SEQ_CLS", inference_mode=False, r=64, lora_alpha=16, lora_dropout=0.1)
 elif args.type=='ptuningv1':
     peft_type = PeftType.P_TUNING
-    peft_config = PromptEncoderConfig(task_type="SEQ_CLS", num_virtual_tokens=args.soft_tokens, encoder_hidden_size=128)
+    peft_config = PromptEncoderConfig(task_type="SEQ_CLS", num_virtual_tokens=args.soft_tokens,
+                                      encoder_hidden_size=1024)
 
 if any(k in model_name_or_path for k in ("gpt", "opt", "bloom")):
     padding_side = "left"
@@ -80,6 +81,7 @@ tokenized_datasets = datasets.map(
 )
 tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
 
+
 def collate_fn(examples):
     return tokenizer.pad(examples, return_tensors="pt")
 
@@ -103,11 +105,11 @@ optimizer = AdamW(params=model.parameters(), lr=lr)
 lr_scheduler = get_linear_schedule_with_warmup(
     optimizer=optimizer,
     num_warmup_steps=0,
-    num_training_steps=(len(train_dataloader) * num_epochs),
+    num_training_steps=(len(train_dataloader) * args.num_epochs),
 )
-
-
-for epoch in range(num_epochs):
+early_stopping = EarlyStopping(patience=args.patience, verbose=True)
+loss_func = torch.nn.CrossEntropyLoss()
+for epoch in range(args.num_epochs):
     model.train()
     total_loss = 0
     best_microf1 = 0
@@ -120,26 +122,30 @@ for epoch in range(num_epochs):
     for step, batch in enumerate(tqdm(train_dataloader)):
         batch.to(device)
         outputs = model(**batch)
-        loss = outputs.loss
-        total_loss += loss.sum()
-        loss.sum().backward()
+        train_loss = outputs.loss
+        total_loss += train_loss.sum().item()
+        train_loss.backward()
         optimizer.step()
         lr_scheduler.step()
         optimizer.zero_grad()
-
+    print("Epoch {}, train_loss {}".format(epoch, total_loss / len(train_dataloader)), flush=True)
+    
     # ========================================
     #               Validation
     # ========================================
     model.eval()
     valid_y_pred = []
     valid_y_true = []
+    total_val_loss = 0
     for step, batch in enumerate(tqdm(dev_dataloader)):
         batch.to(device)
         with torch.no_grad():
             outputs = model(**batch)
+        labels = batch['labels']
+        val_loss = outputs.loss
+        total_val_loss += val_loss.sum().item()
         predictions = outputs.logits.softmax(dim=-1)
         predictions = torch.argmax(predictions, dim=-1)
-        labels = batch['labels']
         valid_y_true.extend(labels.cpu().tolist())
         valid_y_pred.extend(predictions.cpu().tolist())
     pre, recall, f1, _ = precision_recall_fscore_support(valid_y_true, valid_y_pred, average='micro')
@@ -149,8 +155,13 @@ for epoch in range(num_epochs):
         best_microf1 = microf1
         best_macrof1 = f1
         torch.save(model.state_dict(), f"./checkpoint/model.ckpt")
-    print("Epoch {}, f1 {}".format(epoch, f1), flush=True)
-
+    print("Epoch {}, valid f1 {}".format(epoch, f1), flush=True)
+    print("Epoch {}, valid_loss {}".format(epoch, total_val_loss / len(dev_dataloader)), flush=True)
+    
+    # early_stopping(total_val_loss, model)
+    # if early_stopping.early_stop:
+    #     print("Early stopping")
+    #     break
 
 # ========================================
 #               Test
