@@ -26,7 +26,7 @@ from tqdm import tqdm
 # ------------------------init parameters----------------------------
 parser = argparse.ArgumentParser(description='P-tuning v2')
 parser.add_argument('--plm', type=str, default="bert-large", help='choose plm: bert or roberta or ernie')
-parser.add_argument('--type', type=str, default="ptuningv2", help='choose model: ptuningv1, ptuningv2, lora')
+parser.add_argument('--type', type=str, default="lora", help='choose model: ptuningv1, ptuningv2, lora')
 parser.add_argument('--rank', type=int, default=4, help='LORA rank')
 parser.add_argument('--lr', type=float, default=3e-4, help='learning rate')
 parser.add_argument('--soft_tokens', type=int, default=10, help='soft tokens')
