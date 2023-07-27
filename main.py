@@ -45,8 +45,6 @@ elif args.plm == 'ernie':
     model_name_or_path = "nghuyong/ernie-3.0-base-zh"
 elif args.plm == 'bert-large':
     model_name_or_path = "yechen/bert-large-chinese"
-elif args.plm == 'bert-large':
-    model_name_or_path = "yechen/bert-large-chinese"
 elif args.plm == 'roberta-large':
     model_name_or_path = "hfl/chinese-roberta-wwm-ext-large"
 
